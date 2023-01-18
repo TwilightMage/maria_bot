@@ -1,0 +1,13 @@
+{
+  "main_color": "#d1a1e8",
+  "sign": "<:dragon_cute:974832712026312714>",
+  "port": 3000,
+  "database": "db.sqlite",
+  "bot_role": "974826587876892725",
+  "roles_channel": "973056084631760917",
+  "general_channel": "972610485662916650",
+  "furry_message": "973058193079038012",
+  "admin_role": "972611477716484106",
+  "mute_role": "973643842597322792",
+  "draco_id": "341065601625620481"
+}
