@@ -2,10 +2,10 @@
   "name": "maria_bot",
   "version": "1.0.0",
   "description": "A discord bot for my server",
-  "main": "index.js",
+  "main": "index.ts",
   "type": "module",
   "scripts": {
-    "start": "node ./index.js"
+    "start": "ts-node ./index.ts --ignore-warnings"
   },
   "keywords": [],
   "author": "Soft-Fur Dragon",
@@ -13,17 +13,19 @@
   "dependencies": {
     "@google-cloud/translate": "^7.0.5",
     "axios": "^1.2.2",
-    "chatgpt": "^3.3.10",
     "discord-interactions": "^3.2.0",
     "discord.js": "^14.7.1",
-    "hastebin": "^0.2.1",
     "highlight.js": "^11.7.0",
     "node-schedule": "^2.1.0",
     "openai": "^3.1.0",
-    "puppeteer": "^19.4.1",
     "sequelize": "^6.28.0",
     "sqlite3": "^5.1.4",
     "string-replace-async": "^3.0.2",
+    "ts-node": "^10.9.1",
     "websocket": "^1.0.34"
+  },
+  "devDependencies": {
+    "@types/node-schedule": "^2.1.0",
+    "@types/websocket": "^1.0.5"
   }
 }

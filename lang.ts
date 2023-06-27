@@ -5,12 +5,12 @@ const translator = new v2.Translate({key: login.google_key})
 
 let languages = undefined
 
-export async function detect(text) {
+export async function detect(text: string) {
     let language = await translator.detect(text)
 
 }
 
-export async function translate(text, to) {
+export async function translate(text: string, to: string) {
     let translation = await translator.translate(text, to)
     return translation[0]
 }

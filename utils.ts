@@ -1,5 +1,5 @@
-import * as database from "./database.js";
-import * as hastebin from "hastebin";
+import login from "./login.json" assert { type: "json" };
+import * as database from "./database";
 import hljs from "highlight.js/lib/core";
 
 let langs_miss = ['gdscript']
@@ -9,37 +9,44 @@ for (let i = 0; i < langs.length; i++) {
 }
 console.log(`\x1b[34m###\x1b[0m Syntax detection ready!`)
 
-export function oneOf(items) {
+export function oneOf(items: any[]) {
     return items[Math.floor(Math.random() * items.length)]
 }
 
-export function oneOfIndex(items) {
+export function oneOfIndex(items: any[]) {
     return Math.floor(Math.random() * items.length)
 }
 
-export async function setGlobal(name, value) {
+export async function setGlobal(name: string, value: any) {
     await database.Global.upsert({name: name, value: value})
 }
 
-export async function getGlobal(name, default_value) {
+export async function getGlobal(name: string, default_value?: any) {
     return (await database.Global.findByPk(name))?.value || default_value;
 }
 
-export async function format_discord_message(text) {
+export async function format_discord_message(text: string) {
+    const hastebins = {} as {
+        [key: string]: string
+    }
+
     for (let code_block of text.matchAll(/`{3}.*?`{3}/gs)) {
         let language = hljs.highlightAuto(code_block[0].substring(3, code_block[0].length - 3)).language || ''
         text = text.replace(code_block[0], `\`\`\`${language}${code_block[0].substring(3)}`)
     }
 
     if (text.length <= 2000) {
-        return [text]
+        return {
+            parts: [text],
+            hastebins: hastebins
+        }
     } else {
         let code_blocks = []
         for (let code_block of text.matchAll(/`{3}.*?`{3}/gs)) {
             if (code_block[0].split('\n').length - 2 > 10) {
                 code_blocks.push({
-                    start: code_block.index,
-                    length: code_block[0].length
+                    start: code_block.index!,
+                    length: code_block[0].length!
                 })
             }
         }
@@ -60,17 +67,35 @@ export async function format_discord_message(text) {
             let raw_code_block = text.substring(code_blocks[i].start, code_blocks[i].start + code_blocks[i].length)
             let code_block = raw_code_block.trim().substring(raw_code_block.indexOf('\n'), raw_code_block.length - 3).trim()
 
-            let url = await hastebin.createPaste(code_block, {
-                raw: true,
-                contentType: 'text/plain',
-                server: 'https://hastebin.com'
+            //let url = await hastebin.createPaste(code_block, {
+            //    raw: true,
+            //    contentType: 'text/plain' as any,
+            //    server: 'https://hastebin.com'
+            //})
+
+            const response = await fetch('https://hastebin.com/documents', {
+                method: 'POST',
+                headers: {
+                    'content-type': 'text/plain',
+                    'Authorization': `Bearer ${login.hastebin_key}`
+                },
+                body: code_block
             })
 
-            text = text.replace(raw_code_block, url)
+            if (response.ok) {
+                const key = (await response.json()).key
+                text = text.replace(raw_code_block, `https://hastebin.com/share/${key}`)
+                hastebins[key] = code_block
+            } else {
+                throw response
+            }
         }
 
         if (text.length <= 2000) {
-            return [text]
+            return {
+                parts: [text],
+                hastebins: hastebins
+            }
         } else {
             let blocks = []
 
@@ -115,12 +140,15 @@ export async function format_discord_message(text) {
                 }
             }
 
-            return blocks
+            return {
+                parts: blocks,
+                hastebins: hastebins
+            }
         }
     }
 }
 
-const _io = {
+const _io: any = {
     colors: {
         Reset: '\x1b[0m',
         Bright: '\x1b[1m',
