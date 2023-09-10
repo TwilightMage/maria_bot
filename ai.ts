@@ -3,9 +3,12 @@ import {Configuration, OpenAIApi} from "openai";
 import login from "./login.json" assert {type: "json"};
 import fs from "fs";
 import * as utils from "./utils";
-import axios from "axios";
-import {CreateChatCompletionRequest} from "openai/api";
+import axios, {AxiosError} from "axios";
+import {ChatCompletionFunctions, CreateChatCompletionRequest} from "openai/api";
 import {language} from "./localize";
+import {v2} from "@google-cloud/translate";
+
+const translator = new v2.Translate({key: login.google_key})
 
 const configuration = new Configuration({
     apiKey: login.ai_key,
@@ -16,10 +19,19 @@ function readPreset(name: string) {
     return JSON.parse(fs.readFileSync(`./${name}.json`).toString());
 }
 
-export async function conversation(context: string, history: {user: string, ai: string}[], new_message: string, lang: language, uid: string) {
+declare interface GptFunction {
+    name: string
+    arguments: any
+}
+
+export const ImageStyles = ['enhance' , 'anime' , 'photographic' , 'digital-art' , 'comic-book' , 'fantasy-art' , 'line-art' , 'analog-film' , 'neon-punk' , 'isometric' , 'low-poly' , 'origami' , 'modeling-compound' , 'cinematic' , '3d-model' , 'pixel-art' , 'tile-texture'] as const
+export declare type ImageStyleType = typeof ImageStyles[number]
+
+export async function conversation(context: string, history: {user: string, ai: string}[], new_message: string, lang: language, uid: string, functions?: ChatCompletionFunctions[]) {
     let preset = readPreset('ai_preset_chat') as CreateChatCompletionRequest
     preset.messages = [{role: 'system', content: fs.readFileSync(fs.existsSync(`chat_system_${lang}.txt`) ? `chat_system_${lang}.txt` : 'chat_system_en.txt').toString() + '\n' + context}]
     preset.user = uid
+    preset.functions = functions
 
     for (let message of history) {
         preset.messages.push({role: 'user', content: message.user})
@@ -30,17 +42,26 @@ export async function conversation(context: string, history: {user: string, ai: 
 
     try {
         const response = await openai.createChatCompletion(preset)
-        return response.data.choices[0].message?.content
+        const response_message = response.data.choices[0].message
+        if (!!response_message?.function_call) {
+            return {
+                name: response_message.function_call.name,
+                arguments: JSON.parse(response_message.function_call.arguments ?? "{}")
+            } as GptFunction
+        } else {
+            return response_message?.content
+        }
     } catch (e: any) {
+        console.error(`Got error on request: ${e.response.status as number} - ${e.response.statusText}, ${e.response.data}`)
         return e.response.status as number
     }
 }
 
-export async function idea() {
+export async function generateIdea() {
     let preset = readPreset('ai_preset_idea')
     let mood = utils.oneOf(['', 'cute', 'stupid', 'funny', 'sad'])
     let subject = utils.oneOf(['animals', 'fantasy animals', 'dragons'])
-    preset.prompt = `Give me an idea for a ${mood} picture of ${subject}.\n\n`
+    preset.prompt = `Give me an idea for ${mood} picture of ${subject}.\n\n`
     try {
         const response = await openai.createCompletion(preset)
         let idea = response.data.choices[0].text?.trim() || ''
@@ -109,19 +130,45 @@ export async function fetchBio(bio_src: string) {
     }
 }
 
-export async function image(query: string) {
+export async function drawImage(positivePrompt: string, negativePrompt: string, preset: ImageStyleType) : Promise<number | Buffer> {
     try {
-        return {
-            status: 200,
-            url: (await openai.createImage({
-                prompt: query,
-                n: 1,
-                size: "512x512",
-            })).data.data[0].url
-        }
+        const response = await axios.post(
+            'https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image',
+            {
+                steps: 40,
+                width: 1024,
+                height: 1024,
+                seed: 0,
+                cfg_scale: 5,
+                samples: 1,
+                style_preset: preset,
+                text_prompts: [
+                    {
+                        'text': positivePrompt,
+                        'weight': 1
+                    },
+                    {
+                        'text': negativePrompt,
+                        'weight': -1
+                    }
+                ],
+            },
+            {
+                headers: {
+                    accept: 'application/json',
+                    authorization: `Bearer ${login.stability_key}`
+                }
+            })
+
+        return Buffer.from(response.data.artifacts[0].base64, 'base64')
     } catch (e: any) {
-        return {
-            status: e.response.status
+        console.error(`Failed to generate image with prompt "${positivePrompt}" and preset "${preset}"`)
+        if (e instanceof AxiosError) {
+            console.error(e.response!.data)
+            return e.status!
+        } else {
+            console.error(e)
+            return 400
         }
     }
 }
@@ -135,6 +182,16 @@ export async function getUsage() {
 }
 
 export async function getLimit() {
-    let request = await axios.get(`https://api.openai.com/dashboard/billing/subscription`, {headers: {authorization: `Bearer ${login.ai_key}`}})
-    return request.data.hard_limit_usd
+    //let request = await axios.get(`https://api.openai.com/dashboard/billing/subscription`, {headers: {authorization: `Bearer ${login.ai_key}`}})
+    //return request.data.hard_limit_usd
+    return 20
+}
+
+export async function detectLanguage(text: string) {
+    return await translator.detect(text)
+}
+
+export async function translate(text: string, to: string) {
+    let translation = await translator.translate(text, to)
+    return translation[0]
 }

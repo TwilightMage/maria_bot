@@ -10,18 +10,29 @@ import {
     ChannelType,
     PermissionFlagsBits,
     EmbedBuilder,
-    ColorResolvable, Emoji
+    ColorResolvable
 } from "discord.js";
 import * as database from "./database";
 import * as utils from "./utils";
 import * as ai from "./ai";
-import * as lang from "./lang";
 import DiscordGateway from "./discord_gateway";
 import replaceAsync from "string-replace-async";
 import {Op} from "sequelize";
 import schedule from "node-schedule";
 import {format_discord_message} from "./utils";
 import {language, translate} from "./localize";
+import {Help} from "./GPT4Functions/help";
+import {DrawImage} from "./GPT4Functions/draw_image";
+import {QueryDrawStyles} from "./GPT4Functions/query_draw_styles";
+import {Translate} from "./GPT4Functions/translate";
+
+const GPT4Functions = [
+    Help,
+    DrawImage,
+    QueryDrawStyles,
+    Translate,
+    //GoogleSearch
+]
 
 export default class App {
     static instance: App
@@ -29,139 +40,7 @@ export default class App {
     client: Client
     gateway: DiscordGateway
     potd_scheduler: schedule.Job | null = null
-    image_styles: string[] = ['digital art', 'pixel art', 'cartoon style', 'oil painting', 'pastel drawing']
     cached_limit: number = 0
-
-    conversation_gpt_4(message: Message) {
-        return new Promise<void>(async (resolve) => {
-            const lang = ((await message.guild?.fetch())?.preferredLocale || 'en') as language
-
-            let channel = message.channel
-
-            await channel.sendTyping()
-            let typing_timer = setInterval(async () => {
-                await channel.sendTyping()
-            }, 2000)
-
-            const mentioned: Map<string, database.Person | null> = new Map()
-            const server_config = (await database.ServerConfig.findByPk(message.guildId!))!
-
-            const process_message_text = async (message: Message) => {
-                let text = message.content.trim()
-                //if (text.length > 300) {
-                //    await message.reply({content: `${config.sign} сообщение слишком длинное, я не могу на него ответить`})
-                //    return
-                //}
-                if (server_config.bot_role !== null) {
-                    text = text.replaceAll(`<@&${server_config!.bot_role}>`, `<@${this.client.user!.id}>`)
-                }
-
-                if (text.startsWith(`<@${this.client.user!.id}>`)) {
-                    text = text.substring(`<@${this.client.user!.id}>`.length).trim()
-                }
-
-                //mentioned.set(this.client.user!.id, await database.Person.findByPk(this.client.user!.id))
-                text = await replaceAsync(text, /<@(\d+)>/g, async (match, uid) => {
-                    let user = mentioned.get(uid)
-                    if (user === undefined) {
-                        user = await database.Person.findByPk(uid)
-                        mentioned.set(uid, user)
-                    }
-
-                    if (!!user) {
-                        return user.name
-                    } else {
-                        return message.mentions.users.get(uid)!.username
-                    }
-                })
-
-                text = text.replace(/<@&(\d+)>/, (match, rid) => {
-                    return message.mentions.roles.get(rid)!.name
-                })
-
-                return text
-            }
-
-            let history = (await database.Conversation.findAll({where: {
-                    user: message.author.id,
-                    time: {
-                        [Op.gte]: Math.floor(Date.now() / 1000) - config.conversation_limit_time
-                    },
-                    valid: true
-                }
-            })).map(entry => ({server: entry.server, channel: entry.channel, user: entry.message, ai: entry.reply_list(), hastebins: JSON.parse(entry.hastebins)}))
-
-            const conversation_history = []
-
-            for (let i = history.length - 1; i >= 0 && conversation_history.length < config.conversation_limit_length; i--) {
-                const message_user = await this.fetch_message(history[i].server, history[i].channel, history[i].user)
-                if (message_user !== null) {
-                    const message_ai = []
-                    for (let reply of history[i].ai) {
-                        message_ai.push(await this.fetch_message(history[i].server, history[i].channel, reply))
-                    }
-                    if (!message_ai.includes(null)) {
-                        conversation_history.unshift({
-                            user: await process_message_text(message_user),
-                            ai: message_ai.map((message) => message!.content).join().replaceAll(/https:\/\/hastebin\.com\/share\/\w+/g, (str) => {
-                                const match = /https:\/\/hastebin\.com\/share\/(\w+)/.exec(str)!
-                                if (history[i].hastebins[match[1]] !== undefined) {
-                                    return '```\n' + history[i].hastebins[match[1]] + '\n```'
-                                } else {
-                                    return str
-                                }
-                            })
-                        })
-                    }
-                }
-            }
-
-            const message_text = await process_message_text(message)
-
-            let author = mentioned.get(message.author.id)
-            if (author === undefined) {
-                author =  await database.Person.findByPk(message.author.id)
-                mentioned.set(message.author.id, author)
-            }
-
-            let context = ''
-            for (let mention of mentioned) {
-                if (mention[1] === null) continue
-                context += `${mention[0] === message.author.id ? mention[1].bio_2 : mention[1].bio_3}\n`
-            }
-
-            context += translate('Current time is {}.', lang).replace('{}', `${new Date().getHours()}:${new Date().getMinutes()}`) + '\n'
-            //context += translate('Today I talked to {} people.', lang).replace('{}', String(4)) + '\n'
-
-            ai.conversation(context, conversation_history, message_text, lang, message.author.id).then(async (reply) => {
-                clearInterval(typing_timer)
-                if (reply !== undefined) {
-                    if (typeof(reply) === "string") {
-                        const formatted = await format_discord_message(reply)
-                        const reply_messages = []
-                        let message_reply = message
-                        for (let part of formatted.parts) {
-                            message_reply = await message_reply.reply(part)
-                            reply_messages.push(message_reply)
-                        }
-
-                        await database.Conversation.create({user: message.author.id, server: message.guildId!, channel: message.channelId, message: message.id, replies: reply_messages.map((reply) => reply.id).join(' '), time: Math.floor(Date.now() / 1000), hastebins: JSON.stringify(formatted.hastebins)})
-                    } else {
-                        switch (reply) {
-                            case 429:
-                                const reply_message = await message.reply('Подожди, дай отдохнуть, напиши позже.')
-                                await database.Conversation.create({user: message.author.id, server: message.guildId!, channel: message.channelId, message: message.id, replies: reply_message.id, time: Math.floor(Date.now() / 1000), hastebins: '{}'})
-                                break
-                            default:
-                                await message.reply(`segmentation fault (core dumped) ${reply}`)
-                                break
-                        }
-                    }
-                }
-                resolve()
-            })
-        })
-    }
 
     constructor() {
         App.instance = this
@@ -177,18 +56,6 @@ export default class App {
             await this.client.application?.commands.create({
                 name: 'forget',
                 description: 'забыть все диалоги'
-            })
-            await this.client.application?.commands.create({
-                name: 'image',
-                description: 'сгенерировать картинку',
-                options: [
-                    {
-                        name: 'query',
-                        description: 'описание картинки',
-                        type: 3,
-                        maxLength: 150
-                    }
-                ]
             })
             await this.client.application?.commands.create({
                 name: 'me',
@@ -466,21 +333,18 @@ export default class App {
                 )
 
                 if (servers.length > 0) {
-                    let idea = await ai.idea()
+                    let idea = await ai.generateIdea()
                     if (typeof idea === 'string') {
                         idea = idea.replaceAll(/[.!]/g, ',')
-                        idea += ', ' + utils.oneOf(this.image_styles)
                         console.log(`${utils.io.marks.event} POTD idea ${idea}`)
-                        let img = await ai.image(idea)
+                        let imageResult = await ai.drawImage(idea, 'poorly drawn, poorly drawn hands, poorly drawn feet, poorly drawn face, disfigured, bad anatomy', 'anime')
 
-                        if (img.status === 200) {
-                            console.log(`${utils.io.marks.event} POTD link ${img.url}`)
-
+                        if (imageResult instanceof Buffer) {
                             for (let server of servers) {
-                                await (this.client.channels.cache.get(server.potd_channel as string) as TextChannel).send({content: `${config.sign} Картинка дня:\n${idea}`, files: [{attachment: img.url!, name: idea.replaceAll(/[\s\\\/]/g, '_') + '.png'}]})
+                                await (this.client.channels.cache.get(server.potd_channel as string) as TextChannel).send({content: `${config.sign} Картинка дня:\n${idea}`, files: [imageResult]})
                             }
                         } else {
-                            console.error(`${utils.io.marks.event} Failed to send POTD: status ${img.status}`)
+                            console.error(`${utils.io.marks.event} Failed to send POTD: status ${imageResult}`)
                         }
                     }
                 }
@@ -549,7 +413,7 @@ export default class App {
             let message = new Message(this.client, d)
             const conversation_whitelist = config.conversation_whitelist as false | string[]
             if (message.mentions.has(this.client.user) && (conversation_whitelist === false || conversation_whitelist.includes(message.guildId))) {
-                await this.conversation_gpt_4(message)
+                await this.conversation(message)
             }
         })
 
@@ -566,35 +430,6 @@ export default class App {
                     case 'forget':
                         await command.editReply({content: `${config.sign} ${translate('ok', d.locale)}`})
                         await database.Conversation.update({valid: false}, {where: {user: command.user.id}})
-                        break
-                    case 'image':
-                        const rest_interval = 60 * 5
-
-                        let latest_image = await utils.getGlobal('latest_image', 0)
-                        let since_latest_image = Math.floor(Date.now() / 1000) - latest_image
-                        if (since_latest_image <= rest_interval) {
-                            await command.editReply({content: `${config.sign} ${translate('let me rest at least {} seconds more'.replace('{}', (rest_interval - since_latest_image).toString()), d.locale)}`})
-                        } else {
-                            await utils.setGlobal('latest_image', Math.floor(Date.now() / 1000))
-                            await command.editReply({content: `${config.sign} ${translate('ok, wait a little', d.locale)}`})
-                            let idea = command.options.get('query')?.value
-                            if (!idea) {
-                                idea = (await ai.idea()) + ', ' + utils.oneOf(this.image_styles)
-                            }
-                            let img = await ai.image(idea)
-                            if (img.status === 200) {
-                                await command.followUp({content: idea, files: [{attachment: img.url, name: idea.replaceAll(/[\s\\\/]/g, '_') + '.png'}]})
-                            } else {
-                                switch (img.status) {
-                                    case 400:
-                                        await command.followUp({content: `${config.sign} ${translate('bad request', d.locale)}`})
-                                        break
-                                    default:
-                                        await command.followUp({content: `${config.sign} ${translate('I can\'t, error {}', d.locale)}`.replace('{}', img.status.toString())})
-                                        break
-                                }
-                            }
-                        }
                         break
                     case 'me':
                         let action = command.options.getSubcommand()
@@ -623,7 +458,7 @@ export default class App {
                         }
                         break
                     case 'idea':
-                        let idea = await ai.idea()
+                        let idea = await ai.generateIdea()
                         await command.editReply({content: idea})
                         break
                     case 'translate':
@@ -648,7 +483,7 @@ export default class App {
                             }
                         }
 
-                        let translated = await lang.translate(text_or_link, to)
+                        let translated = await ai.translate(text_or_link, to)
                         await command.editReply({content: `${ref}${translated}`})
                         break
                     case 'energy':
@@ -736,9 +571,9 @@ export default class App {
 
                                         let message
                                         if (existing_pool !== null) {
-                                            message = await this.update_role_pool_message(existing_pool, await existing_pool.get_roles())
+                                            message = await this.updateRolePoolMessage(existing_pool, await existing_pool.get_roles())
                                         } else {
-                                            message = await this.update_role_pool_message({
+                                            message = await this.updateRolePoolMessage({
                                                 server_id: command.guildId,
                                                 message_channel_id: command.channelId,
                                                 message_id: null,
@@ -751,7 +586,7 @@ export default class App {
                                             await command.editReply(message)
                                         } else {
                                             await database.RolePool.upsert({text_id: id_param, title: title_param, message_id: message.id, message_channel_id: message.channelId, server_id: command.guildId})
-                                            await command.editReply(`${config.sign} [пул](${this.construct_message_link(command.guildId, message.channelId, message.id)}) обновлен`)
+                                            await command.editReply(`${config.sign} [пул](${this.constructMessageLink(command.guildId, message.channelId, message.id)}) обновлен`)
                                         }
                                     }
                                         break
@@ -761,7 +596,7 @@ export default class App {
 
                                         const existing_pool = await database.RolePool.findOne({where: {server_id: command.guildId, text_id: id}})
                                         if (existing_pool !== null) {
-                                            const existing_message = await this.fetch_message(existing_pool.server_id, existing_pool.message_channel_id, existing_pool.message_id)
+                                            const existing_message = await this.fetchMessage(existing_pool.server_id, existing_pool.message_channel_id, existing_pool.message_id)
                                             if (existing_message !== null) {
                                                 await existing_message.delete()
                                             }
@@ -779,7 +614,7 @@ export default class App {
                                     case 'list':
                                     {
                                         const role_pools = await database.RolePool.findAll({where: {server_id: command.guildId}})
-                                        const output = role_pools.map((pool) => `\`${pool.text_id}\` - [${pool.title}](${this.construct_message_link(pool.server_id, pool.message_channel_id, pool.message_id)})`).join('\n')
+                                        const output = role_pools.map((pool) => `\`${pool.text_id}\` - [${pool.title}](${this.constructMessageLink(pool.server_id, pool.message_channel_id, pool.message_id)})`).join('\n')
                                         await command.editReply(output.length === 0 ? 'Пулы ролей не были добавлены для этого сервера' : output)
                                     }
                                         break
@@ -789,9 +624,9 @@ export default class App {
 
                                         const existing_pool = await database.RolePool.findOne({where: {server_id: command.guildId, text_id: id}})
                                         if (existing_pool !== null) {
-                                            await this.update_role_pool_message(existing_pool, await existing_pool.get_roles())
+                                            await this.updateRolePoolMessage(existing_pool, await existing_pool.get_roles())
 
-                                            await command.editReply(`${config.sign} [пул](${this.construct_message_link(existing_pool.server_id, existing_pool.message_channel_id, existing_pool.message_id)}) ролей бновлен`)
+                                            await command.editReply(`${config.sign} [пул](${this.constructMessageLink(existing_pool.server_id, existing_pool.message_channel_id, existing_pool.message_id)}) ролей бновлен`)
                                         } else {
                                             await command.editReply(`${config.sign} пул ролей не найден`)
                                         }
@@ -809,19 +644,19 @@ export default class App {
                                         let role_param = command.options.get('role').value
                                         let pool_id_param = command.options.get('pool_id').value
                                         let emoji_param = command.options.get('emoji').value
-                                        let description_param = command.options.get('description')?.value || null
+                                        //let description_param = command.options.get('description')?.value || null
 
                                         const pool = await database.RolePool.findOne({where: {server_id: command.guildId, text_id: pool_id_param}})
                                         if (pool !== null) {
                                             await database.Role.upsert({role: role_param, pool_id: pool.id, emoji: emoji_param})
 
                                             const roles = await pool.get_roles()
-                                            const message = await this.update_role_pool_message(pool, roles)
+                                            const message = await this.updateRolePoolMessage(pool, roles)
 
                                             if (typeof message === 'string') {
                                                 await command.editReply(message)
                                             } else {
-                                                await command.editReply(`${config.sign} роль добавлена в [пул](${this.construct_message_link(pool.server_id, pool.message_channel_id, pool.message_id)})`)
+                                                await command.editReply(`${config.sign} роль добавлена в [пул](${this.constructMessageLink(pool.server_id, pool.message_channel_id, pool.message_id)})`)
                                             }
                                         } else {
                                             await command.editReply({content: `${config.sign} пул ролей не найден`})
@@ -851,11 +686,11 @@ export default class App {
 
                                             if (pool !== null) {
                                                 const roles = await pool.get_roles()
-                                                const message = await this.update_role_pool_message(pool, roles)
+                                                const message = await this.updateRolePoolMessage(pool, roles)
                                                 if (typeof message === 'string') {
                                                     await command.editReply(message)
                                                 } else {
-                                                    await command.editReply(`${config.sign} роль удалена из [пула](${this.construct_message_link(pool.server_id, pool.message_channel_id, pool.message_id)})`)
+                                                    await command.editReply(`${config.sign} роль удалена из [пула](${this.constructMessageLink(pool.server_id, pool.message_channel_id, pool.message_id)})`)
                                                 }
                                             }
                                         }
@@ -897,11 +732,11 @@ export default class App {
                         const conversation_history = []
 
                         for (let i = history.length - 1; i >= 0 && conversation_history.length < config.conversation_limit_length; i--) {
-                            const message_user = await this.fetch_message(history[i].server, history[i].channel, history[i].user)
+                            const message_user = await this.fetchMessage(history[i].server, history[i].channel, history[i].user)
                             if (message_user !== null) {
                                 const message_ai = []
                                 for (let reply of history[i].ai) {
-                                    message_ai.push(await this.fetch_message(history[i].server, history[i].channel, reply))
+                                    message_ai.push(await this.fetchMessage(history[i].server, history[i].channel, reply))
                                 }
                                 if (!message_ai.includes(null)) {
                                     conversation_history.unshift({
@@ -913,7 +748,7 @@ export default class App {
                         }
 
                         if (conversation_history.length > 0) {
-                            await command.editReply(`${config.sign} ${translate('these messages I will use as a context for our conversation', d.locale)}\n${conversation_history.map((message) => `${translate('you', d.locale)}: ${this.construct_message_link(message.user.guildId, message.user.channelId, message.user.id)}\n${message.ai.map((reply) => `${translate('me', d.locale)}: ${this.construct_message_link(reply.guildId!, reply.channelId, reply.id)}`).join('\n')}`).join('\n')}`)
+                            await command.editReply(`${config.sign} ${translate('these messages I will use as a context for our conversation', d.locale)}\n${conversation_history.map((message) => `${translate('you', d.locale)}: ${this.constructMessageLink(message.user.guildId, message.user.channelId, message.user.id)}\n${message.ai.map((reply) => `${translate('me', d.locale)}: ${this.constructMessageLink(reply.guildId!, reply.channelId, reply.id)}`).join('\n')}`).join('\n')}`)
                         } else {
                             await command.editReply(`${config.sign} ${translate('I can\'t find any messages I could use as a context for our conversation', d.locale)}`)
                         }
@@ -927,7 +762,150 @@ export default class App {
         })
     }
 
-    private async fetch_message(server: string, channel: string, message: string) {
+    async registerConversationEntry(message: Message, responses: Message[], hastebins?: { [key: string]: string }) {
+        await database.Conversation.create({user: message.author.id, server: message.guildId!, channel: message.channelId, message: message.id, replies: responses.map((response) => response.id).join(' '), time: Math.floor(Date.now() / 1000), hastebins: JSON.stringify(hastebins ?? {})})
+    }
+
+    conversation(message: Message) {
+        return new Promise<void>(async (resolve) => {
+            const lang = ((await message.guild?.fetch())?.preferredLocale || 'en') as language
+
+            let channel = message.channel
+
+            await channel.sendTyping()
+            let typing_timer = setInterval(async () => {
+                await channel.sendTyping()
+            }, 2000)
+
+            const mentioned: Map<string, database.Person | null> = new Map()
+            const server_config = (await database.ServerConfig.findByPk(message.guildId!))!
+
+            const process_message_text = async (message: Message) => {
+                let text = message.content.trim()
+                //if (text.length > 300) {
+                //    await message.reply({content: `${config.sign} сообщение слишком длинное, я не могу на него ответить`})
+                //    return
+                //}
+                if (server_config.bot_role !== null) {
+                    text = text.replaceAll(`<@&${server_config!.bot_role}>`, `<@${this.client.user!.id}>`)
+                }
+
+                if (text.startsWith(`<@${this.client.user!.id}>`)) {
+                    text = text.substring(`<@${this.client.user!.id}>`.length).trim()
+                }
+
+                //mentioned.set(this.client.user!.id, await database.Person.findByPk(this.client.user!.id))
+                text = await replaceAsync(text, /<@(\d+)>/g, async (match, uid) => {
+                    let user = mentioned.get(uid)
+                    if (user === undefined) {
+                        user = await database.Person.findByPk(uid)
+                        mentioned.set(uid, user)
+                    }
+
+                    if (!!user) {
+                        return user.name
+                    } else {
+                        return message.mentions.users.get(uid)!.username
+                    }
+                })
+
+                text = text.replace(/<@&(\d+)>/, (match, rid) => {
+                    return message.mentions.roles.get(rid)!.name
+                })
+
+                return text
+            }
+
+            let history = (await database.Conversation.findAll({where: {
+                    user: message.author.id,
+                    time: {
+                        [Op.gte]: Math.floor(Date.now() / 1000) - config.conversation_limit_time
+                    },
+                    valid: true
+                }
+            })).map(entry => ({server: entry.server, channel: entry.channel, user: entry.message, ai: entry.reply_list(), hastebins: JSON.parse(entry.hastebins)}))
+
+            const conversation_history = []
+
+            for (let i = history.length - 1; i >= 0 && conversation_history.length < config.conversation_limit_length; i--) {
+                const message_user = await this.fetchMessage(history[i].server, history[i].channel, history[i].user)
+                if (message_user !== null) {
+                    const message_ai = []
+                    for (let reply of history[i].ai) {
+                        message_ai.push(await this.fetchMessage(history[i].server, history[i].channel, reply))
+                    }
+                    if (!message_ai.includes(null)) {
+                        conversation_history.unshift({
+                            user: await process_message_text(message_user),
+                            ai: message_ai.map((message) => message!.content).join().replaceAll(/https:\/\/hastebin\.com\/share\/\w+/g, (str) => {
+                                const match = /https:\/\/hastebin\.com\/share\/(\w+)/.exec(str)!
+                                if (history[i].hastebins[match[1]] !== undefined) {
+                                    return '```\n' + history[i].hastebins[match[1]] + '\n```'
+                                } else {
+                                    return str
+                                }
+                            })
+                        })
+                    }
+                }
+            }
+
+            const message_text = await process_message_text(message)
+
+            let author = mentioned.get(message.author.id)
+            if (author === undefined) {
+                author =  await database.Person.findByPk(message.author.id)
+                mentioned.set(message.author.id, author)
+            }
+
+            let context = ''
+            for (let mention of mentioned) {
+                if (mention[1] === null) continue
+                context += `${mention[0] === message.author.id ? mention[1].bio_2 : mention[1].bio_3}\n`
+            }
+
+            context += translate('Current time is {}.', lang).replace('{}', `${new Date().getHours()}:${new Date().getMinutes()}`) + '\n'
+            //context += translate('Today I talked to {} people.', lang).replace('{}', String(4)) + '\n'
+
+            ai.conversation(context, conversation_history, message_text, lang, message.author.id, GPT4Functions.map(func => func.signature)).then(async (reply) => {
+                clearInterval(typing_timer)
+
+                if (reply !== undefined) {
+                    if (typeof(reply) === "string") {
+                        const formatted = await format_discord_message(reply)
+                        const reply_messages: Message[] = []
+                        let message_reply = message
+                        for (let part of formatted.parts) {
+                            message_reply = await message_reply.reply(part)
+                            reply_messages.push(message_reply)
+                        }
+
+                        await this.registerConversationEntry(message, reply_messages, formatted.hastebins)
+                    }
+                    else if (typeof(reply) === 'object') {
+                        const gptFunction = GPT4Functions.find(func => func.signature.name == reply.name)
+                        if (!!gptFunction)
+                        {
+                            await gptFunction.handler(message, this, reply.arguments)
+                        }
+                    } else {
+                        switch (reply) {
+                            case 429:
+                                const reply_message = await message.reply('Подожди, дай отдохнуть, напиши позже.')
+                                await database.Conversation.create({user: message.author.id, server: message.guildId!, channel: message.channelId, message: message.id, replies: reply_message.id, time: Math.floor(Date.now() / 1000), hastebins: '{}'})
+                                break
+                            default:
+                                await message.reply(`segmentation fault (core dumped) ${reply}`)
+                                break
+                        }
+                    }
+                }
+                resolve()
+            })
+        })
+    }
+
+    private async fetchMessage(server: string, channel: string, message: string) {
         try {
             return await ((await (await this.client.guilds.fetch(server)).channels.fetch(channel))! as TextChannel).messages.fetch(message)
         } catch (e) {
@@ -935,7 +913,7 @@ export default class App {
         }
     }
 
-    private construct_roles_pool_embed(pool: {title: string | null, description: string | null}, roles: {emoji: string, role: string}[]) {
+    private constructRolesPoolEmbed(pool: {title: string | null, description: string | null}, roles: {emoji: string, role: string}[]) {
         const embed = new EmbedBuilder()
             .setColor(config.main_color as ColorResolvable)
 
@@ -950,8 +928,8 @@ export default class App {
         return embed
     }
 
-    private async update_role_pool_message(pool: {server_id: string, message_channel_id: string, message_id: string | null, title: string | null, description: string | null}, roles: {emoji: string, role: string}[]) {
-        const embed = this.construct_roles_pool_embed(pool, roles)
+    private async updateRolePoolMessage(pool: {server_id: string, message_channel_id: string, message_id: string | null, title: string | null, description: string | null}, roles: {emoji: string, role: string}[]) {
+        const embed = this.constructRolesPoolEmbed(pool, roles)
 
         let message: Message | null = null
         if (pool.message_id !== null) {
@@ -992,7 +970,7 @@ export default class App {
         return message
     }
 
-    private construct_message_link(server_id: string, channel_id: string, message_id: string) {
+    private constructMessageLink(server_id: string, channel_id: string, message_id: string) {
         return `https://discord.com/channels/${server_id}/${channel_id}/${message_id}`
     }
 
