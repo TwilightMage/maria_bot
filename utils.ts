@@ -1,6 +1,7 @@
 import login from "./login.json" assert { type: "json" };
 import * as database from "./database";
 import hljs from "highlight.js/lib/core";
+import fs from "fs";
 
 let langs_miss = ['gdscript']
 let langs = ['xml', 'cpp', 'csharp', 'javascript', 'bash', 'ruby', 'cmake', '1c', 'ada', 'basic', 'brainfuck', 'css', 'delphi', 'dockerfile', 'fortran', 'go', 'gradle', 'groovy', 'haskell', 'json', 'java', 'kotlin', 'latex', 'lisp', 'lua', 'makefile', 'markdown', 'mathematica', 'nginx', 'php', 'perl', 'powershell', 'python', 'qml', 'rust', 'sql', 'typescript', 'vbscript', 'x86asm', 'yaml']
@@ -187,3 +188,16 @@ _io.marks = {
     event: `${_io.colors.FgBlue}$$$${_io.colors.Reset}`
 }
 export const io = _io
+
+export function writeTmpFile(buffer: Buffer) {
+    if (!fs.existsSync('./tmp')) {
+        fs.mkdirSync('./tmp')
+    }
+
+    var fileName: string | null = null
+    while (fileName === null || fs.existsSync(fileName)) fileName = `./tmp/${Date.now()}`
+
+    fs.writeFileSync(fileName, buffer)
+
+    return fileName
+}

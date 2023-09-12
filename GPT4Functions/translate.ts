@@ -26,6 +26,6 @@ export const Translate: GPT4FunctionDef = {
 
         var response = await message.reply({content: await ai.translate(text, language)})
 
-        app.registerConversationEntry(message, [response])
+        app.registerChatEntry(message, [response])
     }
 }

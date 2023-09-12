@@ -11,7 +11,7 @@ declare class App {
     cached_limit: number
 
     constructor()
-    registerConversationEntry(message: Message, responses: Message[], hastebins?: { [key: string]: string }): Promise<Message>
+    registerChatEntry(message: Message, responses: Message[], hastebins?: { [key: string]: string }, transcription?: string): Promise<Message>
     conversation(message: Message): Promise<Message>
 
     private fetchMessage(server: string, channel: string, message: string): Promise<Message | null>

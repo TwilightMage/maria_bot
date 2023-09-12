@@ -7,6 +7,7 @@ import axios, {AxiosError} from "axios";
 import {ChatCompletionFunctions, CreateChatCompletionRequest} from "openai/api";
 import {language} from "./localize";
 import {v2} from "@google-cloud/translate";
+import {writeTmpFile} from "./utils";
 
 const translator = new v2.Translate({key: login.google_key})
 
@@ -27,7 +28,7 @@ declare interface GptFunction {
 export const ImageStyles = ['enhance' , 'anime' , 'photographic' , 'digital-art' , 'comic-book' , 'fantasy-art' , 'line-art' , 'analog-film' , 'neon-punk' , 'isometric' , 'low-poly' , 'origami' , 'modeling-compound' , 'cinematic' , '3d-model' , 'pixel-art' , 'tile-texture'] as const
 export declare type ImageStyleType = typeof ImageStyles[number]
 
-export async function conversation(context: string, history: {user: string, ai: string}[], new_message: string, lang: language, uid: string, functions?: ChatCompletionFunctions[]) {
+export async function chat(context: string, history: {user: string, ai: string}[], new_message: string, lang: language, uid: string, functions: ChatCompletionFunctions[]) {
     let preset = readPreset('ai_preset_chat') as CreateChatCompletionRequest
     preset.messages = [{role: 'system', content: fs.readFileSync(fs.existsSync(`chat_system_${lang}.txt`) ? `chat_system_${lang}.txt` : 'chat_system_en.txt').toString() + '\n' + context}]
     preset.user = uid
@@ -130,7 +131,7 @@ export async function fetchBio(bio_src: string) {
     }
 }
 
-export async function drawImage(positivePrompt: string, negativePrompt: string, preset: ImageStyleType) : Promise<number | Buffer> {
+export async function drawImage(positivePrompt: string, negativePrompt: string, preset: ImageStyleType) {
     try {
         const response = await axios.post(
             'https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image',
@@ -170,6 +171,66 @@ export async function drawImage(positivePrompt: string, negativePrompt: string, 
             console.error(e)
             return 400
         }
+    }
+}
+
+export async function editImage(imageBuffer: Buffer, maskBuffer: Buffer, positivePrompt: string, negativePrompt: string) {
+    try {
+        var formData = new FormData()
+        formData.append('mask-source', 'MASK_IMAGE_BLACK')
+        formData.append('init-image', new Blob([imageBuffer]))
+        formData.append('mask_image', new Blob([maskBuffer]))
+        formData.append('text_prompts[0][text]', positivePrompt)
+        formData.append('text_prompts[0][weight]', '1')
+        formData.append('text_prompts[1][text]', negativePrompt)
+        formData.append('text_prompts[1][weight]', '-1')
+        formData.append('cfg_scale', '7')
+        formData.append('clip_guidance_preset', 'FAST_BLUE')
+        formData.append('sampler', 'K_DPM_2_ANCESTRAL')
+        formData.append('samples', '1')
+        formData.append('steps', '30')
+
+        const response = await axios.post(
+            'https://api.stability.ai/v1/generation/{engine_id}/image-to-image/masking',
+            formData,
+            {
+                headers: {
+                    Accept: 'application/json',
+                    Authorization: `Bearer ${login.stability_key}`
+                }
+            }
+        )
+
+        return Buffer.from(response.data.artifacts[0].base64, 'base64')
+    } catch (e) {
+        console.error(`Failed to edit image with prompt "${positivePrompt}"`)
+        if (e instanceof AxiosError) {
+            console.error(e.response!.data)
+            return e.status!
+        } else {
+            console.error(e)
+            return 400
+        }
+    }
+}
+
+export async function transcript(audioBuffer: Buffer, language: language) {
+    try {
+        var formData = new FormData()
+        formData.append('model', 'whisper-1')
+        formData.append('file', new Blob([audioBuffer]), 'audio.ogg')
+        formData.append('language', language)
+
+        var response = await axios.post('https://api.openai.com/v1/audio/transcriptions', formData, {
+            headers: {
+                "Content-Type": "multipart/form-data",
+                "Authorization": `Bearer ${login.ai_key}`
+            }
+        })
+        return response.data.text
+    } catch (e) {
+        console.error(e)
+        return null
     }
 }
 

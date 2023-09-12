@@ -13,6 +13,6 @@ export const QueryDrawStyles: GPT4FunctionDef = {
     handler: async (message, app, args) => {
         var response = await message.reply({content: `Я могу рисовать картинки в этих стилях: ${ImageStyles.map(word => `\`${word}\``).join(', ')}, но ты можешь упоминать их на любом языке.`})
 
-        app.registerConversationEntry(message, [response])
+        app.registerChatEntry(message, [response])
     }
 }

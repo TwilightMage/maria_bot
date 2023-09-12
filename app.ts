@@ -23,12 +23,16 @@ import {format_discord_message} from "./utils";
 import {language, translate} from "./localize";
 import {Help} from "./GPT4Functions/help";
 import {DrawImage} from "./GPT4Functions/draw_image";
+import {EditImage} from "./GPT4Functions/edit_image";
 import {QueryDrawStyles} from "./GPT4Functions/query_draw_styles";
 import {Translate} from "./GPT4Functions/translate";
+import axios from "axios";
+import fs from "fs";
 
 const GPT4Functions = [
     Help,
     DrawImage,
+    //EditImage,
     QueryDrawStyles,
     Translate,
     //GoogleSearch
@@ -413,7 +417,7 @@ export default class App {
             let message = new Message(this.client, d)
             const conversation_whitelist = config.conversation_whitelist as false | string[]
             if (message.mentions.has(this.client.user) && (conversation_whitelist === false || conversation_whitelist.includes(message.guildId))) {
-                await this.conversation(message)
+                await this.chat(message)
             }
         })
 
@@ -762,11 +766,11 @@ export default class App {
         })
     }
 
-    async registerConversationEntry(message: Message, responses: Message[], hastebins?: { [key: string]: string }) {
+    async registerChatEntry(message: Message, responses: Message[], hastebins?: { [key: string]: string }, transcription?: string) {
         await database.Conversation.create({user: message.author.id, server: message.guildId!, channel: message.channelId, message: message.id, replies: responses.map((response) => response.id).join(' '), time: Math.floor(Date.now() / 1000), hastebins: JSON.stringify(hastebins ?? {})})
     }
 
-    conversation(message: Message) {
+    chat(message: Message) {
         return new Promise<void>(async (resolve) => {
             const lang = ((await message.guild?.fetch())?.preferredLocale || 'en') as language
 
@@ -781,6 +785,23 @@ export default class App {
             const server_config = (await database.ServerConfig.findByPk(message.guildId!))!
 
             const process_message_text = async (message: Message) => {
+                if (message.attachments.size == 1 && message.attachments.at(0)!.name == 'voice-message.ogg') {
+                    try {
+                        var transcriptionRecord = await database.Transcription.findOne({where: {server: message.guildId!, channel: message.channelId, message: message.id}})
+                        if (!!transcriptionRecord) return transcriptionRecord.transcription
+
+                        var voiceMessageResponse = await axios.get(message.attachments.at(0)!.url, {
+                            responseType: 'arraybuffer'
+                        })
+                        var transcription = await ai.transcript(voiceMessageResponse.data as Buffer, lang)
+                        await database.Transcription.create({server: message.guildId!, channel: message.channelId, message: message.id, transcription: transcription})
+                        return transcription
+                    } catch (e) {
+                        console.error(e)
+                        return ''
+                    }
+                }
+
                 let text = message.content.trim()
                 //if (text.length > 300) {
                 //    await message.reply({content: `${config.sign} сообщение слишком длинное, я не могу на него ответить`})
@@ -850,7 +871,7 @@ export default class App {
                 }
             }
 
-            const message_text = await process_message_text(message)
+            var message_text = await process_message_text(message)
 
             let author = mentioned.get(message.author.id)
             if (author === undefined) {
@@ -867,7 +888,7 @@ export default class App {
             context += translate('Current time is {}.', lang).replace('{}', `${new Date().getHours()}:${new Date().getMinutes()}`) + '\n'
             //context += translate('Today I talked to {} people.', lang).replace('{}', String(4)) + '\n'
 
-            ai.conversation(context, conversation_history, message_text, lang, message.author.id, GPT4Functions.map(func => func.signature)).then(async (reply) => {
+            ai.chat(context, conversation_history, message_text, lang, message.author.id, GPT4Functions.map(func => func.signature)).then(async (reply) => {
                 clearInterval(typing_timer)
 
                 if (reply !== undefined) {
@@ -880,7 +901,7 @@ export default class App {
                             reply_messages.push(message_reply)
                         }
 
-                        await this.registerConversationEntry(message, reply_messages, formatted.hastebins)
+                        await this.registerChatEntry(message, reply_messages, formatted.hastebins)
                     }
                     else if (typeof(reply) === 'object') {
                         const gptFunction = GPT4Functions.find(func => func.signature.name == reply.name)

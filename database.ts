@@ -78,6 +78,40 @@ Conversation.init( {
     }
 )
 
+export class Transcription extends Model<InferAttributes<Transcription>, InferCreationAttributes<Transcription>> {
+    declare server: string
+    declare channel: string
+    declare message: string
+    declare transcription: string
+}
+
+Transcription.init({
+        server: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            primaryKey: true
+        },
+        channel: {
+            type: DataTypes.TEXT,
+            allowNull: false,
+            primaryKey: true
+        },
+        message: {
+            type: DataTypes.TEXT,
+            allowNull: false,
+            primaryKey: true
+        },
+        transcription: {
+            type: DataTypes.TEXT,
+            allowNull: false,
+        }
+    },
+    {
+        sequelize,
+        timestamps: false
+    }
+)
+
 export class Event extends Model<InferAttributes<Event>, InferCreationAttributes<Event>> {
     declare id: CreationOptional<number>
     declare time: number
@@ -312,6 +346,7 @@ Role.belongsTo(RolePool, {foreignKey: 'pool_id', targetKey: 'id'})
 RolePool.hasMany(Role, {foreignKey: 'pool_id', sourceKey: 'id'})
 
 await Conversation.sync()
+await Transcription.sync()
 await Event.sync()
 await Global.sync()
 await Person.sync()

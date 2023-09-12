@@ -37,7 +37,7 @@ export const DrawImage: GPT4FunctionDef = {
         if (!positiveKeywords.includes('best quality')) positiveKeywords.unshift('best quality')
         if (!positiveKeywords.includes('masterpiece')) positiveKeywords.unshift('masterpiece')
 
-        var negativeKeywords = ['blurry', 'bad', 'cut off', 'deformed', 'bad art', 'beginner', 'draft', 'poorly drawn']
+        var negativeKeywords = ['blurry', 'bad', 'cut off', 'deformed', 'bad art', 'beginner', 'draft', 'poorly drawn', 'watermark']
         if (drawCharacter) {
             negativeKeywords.push('poorly drawn hands', 'poorly drawn feet', 'poorly drawn face', 'disfigured', 'bad anatomy')
         }
@@ -64,7 +64,7 @@ export const DrawImage: GPT4FunctionDef = {
             }
 
             if (!!response) {
-                app.registerConversationEntry(message, [response])
+                app.registerChatEntry(message, [response])
             }
         })
     }

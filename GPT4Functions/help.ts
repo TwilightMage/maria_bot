@@ -12,6 +12,6 @@ export const Help: GPT4FunctionDef = {
     handler: async (message, app, args) => {
         var response = await message.reply({content: "Я могу рисовать картинки, переводить текст и просто разговаривать с тобой."})
 
-        app.registerConversationEntry(message, [response])
+        app.registerChatEntry(message, [response])
     }
 }
